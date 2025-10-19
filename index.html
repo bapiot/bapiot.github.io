@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="tr" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yapay Zekâ Destekli İHA Projesi - Kontrol Paneli</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chosen Palette: Slate & Sky -->
+    <!-- Application Structure Plan: A single-page dashboard with header navigation to jump between sections: Project Summary, an interactive Gantt-style Timeline, a Role-based Task Distribution view, and a Technical Details accordion. This structure was chosen to allow both high-level project tracking (timeline) and role-specific views (task cards), facilitating easy navigation and reducing information overload for team members. Clicking on elements cross-references information between sections. -->
+    <!-- Visualization & Content Choices: Timeline -> Goal: Show Change/Relationships -> Viz: HTML/CSS Gantt Chart -> Interaction: Click task to see details, filter by role -> Justification: Most intuitive way to visualize a project plan. Task Details -> Goal: Inform -> Viz: Accordion List -> Interaction: Click to expand/collapse -> Justification: Hides complexity by default. Role Cards -> Goal: Organize -> Viz: HTML Cards -> Interaction: Click to filter timeline -> Justification: Provides a personalized view for each team member. Libraries: Vanilla JS, Tailwind CSS. -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f1f5f9;
+        }
+        .gantt-chart-container {
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 8px;
+        }
+        .gantt-grid {
+            display: grid;
+            grid-template-columns: repeat(24, minmax(0, 1fr));
+            gap: 2px;
+            padding: 8px 0;
+        }
+        .gantt-bar {
+            grid-column: var(--start) / span var(--duration);
+            transition: all 0.3s ease;
+            cursor: pointer;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+        }
+        .gantt-bar:hover {
+            transform: scale(1.02);
+            opacity: 1 !important;
+        }
+        .gantt-bar-dimmed {
+             opacity: 0.3;
+             filter: grayscale(80%);
+        }
+        .gantt-label {
+            height: 40px; 
+            display: flex;
+            align-items: center;
+            padding-left: 8px;
+        }
+        .header-underline {
+            position: relative;
+            padding-bottom: 8px;
+        }
+        .header-underline::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 50px;
+            height: 3px;
+            background-color: #0284c7;
+        }
+        .task-card.highlight {
+            transform: scale(1.03);
+            box-shadow: 0 0 25px rgba(2, 132, 199, 0.4);
+            border-color: #0284c7;
+        }
+        .accordion-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.5s ease-out;
+        }
+        .bg-bm { background-color: #0ea5e9; } /* sky-500 */
+        .border-bm { border-left-color: #0ea5e9; }
+        .bg-eem { background-color: #10b981; } /* emerald-500 */
+        .border-eem { border-left-color: #10b981; }
+        .filter-active {
+            background-color: #0284c7 !important;
+            color: white !important;
+        }
+    </style>
+</head>
+<body class="text-slate-800">
+
+    <header class="bg-white/80 backdrop-blur-lg sticky top-0 z-50 shadow-md">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <h1 class="text-xl md:text-2xl font-bold text-slate-900">
+                🚀 <span class="hidden sm:inline">İHA Projesi Kontrol Paneli</span>
+            </h1>
+            <nav class="hidden md:flex space-x-6 text-base font-medium">
+                <a href="#proje-akisi" class="text-slate-600 hover:text-sky-600 transition">Proje Akışı</a>
+                <a href="#gorev-dagilimi" class="text-slate-600 hover:text-sky-600 transition">Görev Dağılımı</a>
+                <a href="#teknik-detaylar" class="text-slate-600 hover:text-sky-600 transition">Teknik Detaylar</a>
+            </nav>
+            <div id="mobile-menu-button" class="md:hidden text-2xl cursor-pointer">☰</div>
+        </div>
+        <div id="mobile-menu" class="hidden md:hidden bg-white px-6 pb-4">
+             <a href="#proje-akisi" class="block py-2 text-slate-600 hover:text-sky-600 transition">Proje Akışı</a>
+             <a href="#gorev-dagilimi" class="block py-2 text-slate-600 hover:text-sky-600 transition">Görev Dağılımı</a>
+             <a href="#teknik-detaylar" class="block py-2 text-slate-600 hover:text-sky-600 transition">Teknik Detaylar</a>
+        </div>
+    </header>
+
+    <main class="container mx-auto p-4 md:p-8">
+
+        <section id="proje-akisi" class="mb-12">
+            <h2 class="text-3xl font-bold mb-6 header-underline">Proje Akışı ve Zaman Çizelgesi</h2>
+            <p class="mb-8 text-slate-600 max-w-3xl">Proje, 4 ana faza ayrılmıştır ve toplam 24 hafta sürmesi hedeflenmektedir. Aşağıdaki interaktif zaman çizelgesi, görevlerin haftalık dağılımını, sürelerini ve birbirleriyle olan ilişkilerini göstermektedir. Bir görevin detaylarını görmek için üzerine tıklayabilirsiniz.</p>
+            
+            <div class="bg-white p-6 rounded-2xl shadow-lg overflow-x-auto">
+                <div class="min-w-[800px]">
+                    <div class="gantt-chart-container mb-2">
+                        <div></div>
+                        <div class="gantt-grid text-xs text-center text-slate-500">
+                            <!-- Gantt Headers will be generated by JS -->
+                        </div>
+                    </div>
+                    <div id="gantt-chart" class="gantt-chart-container">
+                        <!-- Gantt Rows will be generated by JS -->
+                    </div>
+                </div>
+                 <div class="mt-4 flex flex-wrap gap-4 text-sm">
+                    <div class="flex items-center gap-2"><div class="w-4 h-4 rounded-full bg-bm"></div><span>Bilgisayar Müh. (BM)</span></div>
+                    <div class="flex items-center gap-2"><div class="w-4 h-4 rounded-full bg-eem"></div><span>Elektrik-Elektronik Müh. (EEM)</span></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="gorev-dagilimi" class="mb-12">
+            <h2 class="text-3xl font-bold mb-6 header-underline">Disipline Göre Görev Dağılımı</h2>
+             <p class="mb-8 text-slate-600 max-w-3xl">Her ekip üyesinin projedeki ana odak alanları ve sorumlulukları aşağıda özetlenmiştir. Bir roldeki görevleri zaman çizelgesinde vurgulamak için ilgili butona tıklayın.</p>
+            <div class="grid md:grid-cols-2 gap-8">
+                <!-- Role cards will be generated by JS -->
+            </div>
+        </section>
+
+        <section id="teknik-detaylar">
+            <h2 class="text-3xl font-bold mb-6 header-underline">Teknik Detaylar ve İş Paketleri</h2>
+            <p class="mb-8 text-slate-600 max-w-3xl">Her bir iş paketinin (İP) teknik hedefleri, sorumlu disiplinleri ve beklenen çıktıları aşağıda detaylandırılmıştır. Daha fazla bilgi için başlıklara tıklayarak ilgili bölümü genişletebilirsiniz.</p>
+            <div id="accordion-container" class="space-y-4">
+                <!-- Accordion items will be generated by JS -->
+            </div>
+        </section>
+
+    </main>
+    
+    <footer class="text-center py-8 text-slate-500 text-sm">
+        <p>Yapay Zekâ Destekli İHA Projesi Kontrol Paneli | Abdullah Gül Üniversitesi</p>
+    </footer>
+
+<script>
+const projectData = {
+    tasks: [
+        { id: 'A', name: 'Mekanik Montaj ve Kablolama', sorumlu: 'EEM 1', start: 1, duration: 4, dep: [], discipline: 'eem' },
+        { id: 'E', name: 'Simülasyon Ortamı Kurulumu', sorumlu: 'BM 1', start: 1, duration: 4, dep: [], discipline: 'bm' },
+        { id: 'B', name: 'Uçuş Kontrol ve Kalibrasyon', sorumlu: 'EEM 1', start: 5, duration: 3, dep: ['A'], discipline: 'eem' },
+        { id: 'D', name: 'IoFT Haberleşme Altyapısı', sorumlu: 'BM 2 / EEM 2', start: 5, duration: 5, dep: ['A'], discipline: 'eem' },
+        { id: 'C', name: 'Yapay Zekâ (Görüntü İşleme)', sorumlu: 'BM 1', start: 5, duration: 6, dep: ['E'], discipline: 'bm' },
+        { id: 'F', name: 'Otonom Güdüm ve Dalış Algoritması', sorumlu: 'BM 2', start: 11, duration: 6, dep: ['C', 'E'], discipline: 'bm' },
+        { id: 'G', name: 'Entegrasyon ve Simülasyon Testleri', sorumlu: 'BM 2 (Lider)', start: 15, duration: 4, dep: ['C', 'D', 'F'], discipline: 'bm' },
+        { id: 'H', name: 'Saha Uçuş Testleri ve Veri Toplama', sorumlu: 'EEM 1 (Lider)', start: 19, duration: 6, dep: ['G'], discipline: 'eem' },
+        { id: 'I', name: 'Analiz ve Raporlama', sorumlu: 'BM 1 (Lider)', start: 21, duration: 4, dep: ['H'], discipline: 'bm' }
+    ],
+    roles: [
+        { 
+            id: 'bm1',
+            title: 'BM 1: Görüntü İşleme & Simülasyon', 
+            icon: '🧠',
+            tasks: ['E', 'C', 'I'],
+            description: 'Yapay zekâ, görüntü işleme algoritmaları ve projenin sanal test ortamının kurulumundan sorumludur.'
+        },
+        { 
+            id: 'bm2',
+            title: 'BM 2: Otonom Güdüm & Ağ Yazılımı', 
+            icon: '💻',
+            tasks: ['D', 'F', 'G'],
+            description: 'İHA\'ların otonom hareket algoritmaları, aralarındaki iletişim yazılımı ve tüm sistemin entegrasyonundan sorumludur.'
+        },
+        { 
+            id: 'eem1',
+            title: 'EEM 1: Mekanik & Uçuş Kontrol', 
+            icon: '🛠️',
+            tasks: ['A', 'B', 'H'],
+            description: 'İHA\'ların fiziksel montajı, uçuş kontrol kartlarının ayarlanması ve saha testlerinin liderliğinden sorumludur.'
+        },
+        { 
+            id: 'eem2',
+            title: 'EEM 2: Haberleşme & Sensörler', 
+            icon: '⚡',
+            tasks: ['D', 'G', 'H'],
+            description: 'Haberleşme donanımları, kamera ve sensörlerin entegrasyonu ile saha testleri sırasında veri takibinden sorumludur.'
+        }
+    ],
+    details: [
+        { id: 'A', content: 'İki adet sabit kanatlı İHA\'nın tüm mekanik montajının tamamlanması. Motor, ESC, Servo ve Batarya sistemlerinin güvenli kablolaması.' },
+        { id: 'E', content: 'ROS2 ve Gazebo\'nun kurulması. Sanal İHA ve gimbal modellerinin sisteme entegrasyonu.' },
+        { id: 'B', content: 'Pixhawk PX4 yazılımlarının yüklenmesi. GPS, Pusula ve RC Kumanda/Alıcı entegrasyonu dahil tüm temel kalibrasyonların tamamlanması.' },
+        { id: 'D', content: 'İHA-İHA arası LoRa veri paketlerini işleyen yazılımın geliştirilmesi. GSM/MQTT üzerinden bulut tabanlı izleme yazılımı. LoRa, GSM/GPS modüllerinin fiziksel bağlantıları ve sürücü kurulumları.' },
+        { id: 'C', content: 'YOLO modelinin prototip QR kod tespiti için hazırlanması. Hibrit algoritmalar (Adaptive Thresholding) ile ön tespit kodunun yazılması. Fotogrametrik GPS koordinat hesaplama fonksiyonu.' },
+        { id: 'F', content: 'Kamikaze İHA\'sı için hedef koordinata göre otonom dalış rotası (PX4 uyumlu) ve güvenli yükseliş/geri dönme algoritmalarının kodlanması.' },
+        { id: 'G', content: 'Tüm yazılımların ROS2/Gazebo\'da sorunsuz çalışır hale getirilmesi. Uçtan uca senaryonun simülasyonda doğrulanması ve raporlanması. (Simülasyon Başarısı: >%90)' },
+        { id: 'H', content: 'Otonom görevlerin sahada icra edilmesi ve pilotaj desteği. Tüm test verilerinin toplanması ve kaydedilmesi. (Gerçek Uçuş Başarısı: >%70)' },
+        { id: 'I', content: 'Simülasyon/Saha verilerinin istatistiksel analizi. Proje makale/rapor taslağının \'Yöntem\' ve \'Sonuçlar\' bölümlerinin hazırlanması.' }
+    ]
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    const ganttChart = document.getElementById('gantt-chart');
+    const ganttHeaderContainer = document.querySelector('.gantt-grid');
+    const rolesContainer = document.querySelector('#gorev-dagilimi .grid');
+    const accordionContainer = document.getElementById('accordion-container');
+    
+    // Generate Gantt Headers
+    for (let i = 1; i <= 24; i++) {
+        const headerCell = document.createElement('div');
+        headerCell.textContent = `${i}.H`;
+        ganttHeaderContainer.appendChild(headerCell);
+    }
+
+    // Generate Gantt Chart & Accordion
+    projectData.tasks.forEach(task => {
+        // Gantt Row
+        const label = document.createElement('div');
+        label.className = 'gantt-label bg-slate-50 rounded-l-lg font-medium text-sm text-slate-700';
+        label.textContent = `İP ${task.id}`;
+
+        const grid = document.createElement('div');
+        grid.className = 'gantt-grid';
+
+        const bar = document.createElement('div');
+        bar.className = `gantt-bar bg-${task.discipline} text-white text-xs flex items-center justify-center p-1 rounded-lg h-[40px] shadow`;
+        bar.style.setProperty('--start', task.start);
+        bar.style.setProperty('--duration', task.duration);
+        bar.textContent = task.name;
+        bar.dataset.taskId = task.id;
+        bar.dataset.discipline = task.discipline;
+
+        grid.appendChild(bar);
+        ganttChart.appendChild(label);
+        ganttChart.appendChild(grid);
+        
+        // Accordion Item
+        const detail = projectData.details.find(d => d.id === task.id);
+        const accordionItem = document.createElement('div');
+        accordionItem.id = `task-card-${task.id}`;
+        accordionItem.className = `task-card bg-white rounded-2xl shadow-lg border-l-8 border-${task.discipline} transition-all duration-300 overflow-hidden`;
+
+        accordionItem.innerHTML = `
+            <div class="accordion-header p-5 cursor-pointer flex justify-between items-center">
+                <div>
+                    <h3 class="font-bold text-lg">${task.id}: ${task.name}</h3>
+                    <p class="text-sm text-slate-500">Sorumlu: ${task.sorumlu} | Süre: ${task.duration} Hafta</p>
+                </div>
+                <span class="text-2xl font-light text-slate-500 transform transition-transform duration-300">+</span>
+            </div>
+            <div class="accordion-content">
+                <div class="p-5 pt-0 text-slate-600">
+                    <p>${detail.content}</p>
+                </div>
+            </div>
+        `;
+        accordionContainer.appendChild(accordionItem);
+    });
+
+    // Generate Role Cards
+    projectData.roles.forEach(role => {
+        const card = document.createElement('div');
+        card.className = 'bg-white p-6 rounded-2xl shadow-lg flex flex-col';
+        card.innerHTML = `
+            <div class="flex items-center gap-4 mb-4">
+                <span class="text-4xl">${role.icon}</span>
+                <h3 class="text-xl font-bold">${role.title}</h3>
+            </div>
+            <p class="text-slate-600 mb-4 flex-grow">${role.description}</p>
+            <button data-role-id="${role.id}" class="filter-btn mt-auto w-full bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg transition hover:bg-sky-200">
+                Görevleri Vurgula
+            </button>
+        `;
+        rolesContainer.appendChild(card);
+    });
+    
+    // Accordion Logic
+    accordionContainer.addEventListener('click', (e) => {
+        const header = e.target.closest('.accordion-header');
+        if (!header) return;
+
+        const accordionItem = header.parentElement;
+        const content = accordionItem.querySelector('.accordion-content');
+        const icon = header.querySelector('span');
+        const isOpen = content.style.maxHeight;
+        
+        // Close all others
+        accordionContainer.querySelectorAll('.accordion-content').forEach(c => c.style.maxHeight = null);
+        accordionContainer.querySelectorAll('.accordion-header span').forEach(i => i.classList.remove('rotate-45'));
+
+        if (!isOpen) {
+            content.style.maxHeight = content.scrollHeight + "px";
+            icon.classList.add('rotate-45');
+        }
+    });
+
+    // Gantt Bar Click Logic
+    ganttChart.addEventListener('click', (e) => {
+        const bar = e.target.closest('.gantt-bar');
+        if(!bar) return;
+
+        const taskId = bar.dataset.taskId;
+        const targetCard = document.getElementById(`task-card-${taskId}`);
+
+        if (targetCard) {
+            // Remove highlight from all cards
+            document.querySelectorAll('.task-card').forEach(card => card.classList.remove('highlight'));
+            
+            // Add highlight to target card
+            targetCard.classList.add('highlight');
+            targetCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            // Open the accordion
+            const content = targetCard.querySelector('.accordion-content');
+             if (!content.style.maxHeight) {
+                targetCard.querySelector('.accordion-header').click();
+             }
+        }
+    });
+    
+    // Filter Logic - Yenilenmiş ve İyileştirilmiş
+    let activeFilter = null;
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const roleId = btn.dataset.roleId;
+            const roleTasks = projectData.roles.find(r => r.id === roleId).tasks;
+            const ganttBars = document.querySelectorAll('.gantt-bar');
+            
+            if (activeFilter === roleId) {
+                // Filtreyi Kaldır
+                ganttBars.forEach(bar => bar.classList.remove('gantt-bar-dimmed'));
+                btn.classList.remove('filter-active');
+                activeFilter = null;
+            } else {
+                // Diğer butonları deaktif et
+                 document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('filter-active'));
+                 
+                // Bu filtreyi aktif et
+                btn.classList.add('filter-active');
+                activeFilter = roleId;
+
+                ganttBars.forEach(bar => {
+                    if (roleTasks.includes(bar.dataset.taskId)) {
+                        bar.classList.remove('gantt-bar-dimmed'); // Vurgula
+                    } else {
+                        bar.classList.add('gantt-bar-dimmed'); // Solgunlaştır
+                    }
+                });
+            }
+        });
+    });
+
+    // Mobile Menu
+    const mobileMenuButton = document.getElementById('mobile-menu-button');
+    const mobileMenu = document.getElementById('mobile-menu');
+    mobileMenuButton.addEventListener('click', () => {
+        mobileMenu.classList.toggle('hidden');
+    });
+
+    // Close mobile menu on link click
+    mobileMenu.addEventListener('click', (e) => {
+        if (e.target.tagName === 'A') {
+            mobileMenu.classList.add('hidden');
+        }
+    });
+});
+</script>
+
+</body>
+</html>
