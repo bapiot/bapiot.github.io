@@ -10,7 +10,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <!-- Chosen Palette: Slate & Sky -->
     <!-- Application Structure Plan: A single-page dashboard with header navigation to jump between sections: Project Summary, an interactive Gantt-style Timeline, a Role-based Task Distribution view, and a Technical Details accordion. This structure was chosen to allow both high-level project tracking (timeline) and role-specific views (task cards), facilitating easy navigation and reducing information overload for team members. Clicking on elements cross-references information between sections. -->
-    <!-- Visualization & Content Choices: Timeline -> Goal: Show Change/Relationships -> Viz: HTML/CSS Gantt Chart -> Interaction: Click task to see details, filter by role -> Justification: Most intuitive way to visualize a project plan. Task Details -> Goal: Inform -> Viz: Accordion List -> Interaction: Click to expand/collapse -> Justification: Hides complexity by default. Role Cards -> Goal: Organize -> Viz: HTML Cards -> Interaction: Click to filter timeline -> Justification: Provides a personalized view for each team member. Libraries: Vanilla JS, Tailwind CSS. -->
+    <!-- Visualization & Content Choices: Timeline -> Goal: Show Change/Relationships -> Viz: HTML/CSS Gantt Chart -> Interaction: Click task to see details, filter by role -> Justification: Most intuitive way to visualize a project plan. Task Details -> Goal: Inform/Track Status -> Viz: Accordion List with integrated Firestore fields and detailed sub-tasks -> Interaction: Click to expand/collapse, Sub-checkboxes/Notes for persistence -> Justification: Detailed tracking via sub-tasks enhances accountability and progress visibility. Libraries: Vanilla JS, Tailwind CSS, Firebase Firestore. -->
     <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
     <style>
         body {
@@ -29,11 +29,11 @@
             padding: 8px 0;
         }
         .gantt-bar {
-            grid-column: var(--start) / span var(--duration);
+            grid-column: auto; /* Grid column property now set directly in JS for reliability */
             transition: all 0.3s ease;
             cursor: pointer;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
-            font-size: 0.65rem; /* Haftalık sütunlar daralınca yazı küçültüldü */
+            font-size: 0.6rem; /* Haftalık sütunlar daralınca yazı küçültüldü */
         }
         .gantt-bar:hover {
             transform: scale(1.02);
@@ -80,7 +80,195 @@
             background-color: #0284c7 !important;
             color: white !important;
         }
+        .completed-task .accordion-header {
+            background-color: #f0fdf4; /* green-50 */
+        }
+        .sub-task-label {
+            transition: color 0.3s;
+        }
+        .sub-task-checkbox:checked + .sub-task-label {
+            color: #16a34a; /* green-700 */
+            text-decoration: line-through;
+        }
+        /* YENİ CSS: Dönme efektini yalnızca simgeye uygulayacak container */
+        .accordion-icon {
+            transition: transform 0.3s ease;
+        }
+        .accordion-icon.rotate-45 {
+            transform: rotate(45deg);
+        }
     </style>
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Global Variables (will be attached to window for global access)
+        window.firebaseApp = null;
+        window.db = null;
+        window.auth = null;
+        window.userId = null;
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        setLogLevel('Debug'); 
+
+        async function initializeFirebaseAndAuth() {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase config is missing. Data persistence disabled.");
+                    document.getElementById('user-id-display').textContent = "Veri Kayıt Kapalı (Config Yok)";
+                    return;
+                }
+
+                window.firebaseApp = initializeApp(firebaseConfig);
+                window.db = getFirestore(window.firebaseApp);
+                window.auth = getAuth(window.firebaseApp);
+                
+                await new Promise(resolve => {
+                    onAuthStateChanged(window.auth, async (user) => {
+                        if (user) {
+                            window.userId = user.uid;
+                            document.getElementById('user-id-display').textContent = `Kullanıcı: ${user.uid}`;
+                            resolve();
+                        } else {
+                            try {
+                                if (initialAuthToken) {
+                                    await signInWithCustomToken(window.auth, initialAuthToken);
+                                } else {
+                                    await signInAnonymously(window.auth);
+                                }
+                            } catch (error) {
+                                console.error("Authentication failed:", error);
+                                window.userId = 'unauthenticated-user';
+                                document.getElementById('user-id-display').textContent = `Kullanıcı: Hata (${window.userId})`;
+                            }
+                            // Fallback in case onAuthStateChanged is slow or fails
+                            if (window.auth.currentUser) {
+                                window.userId = window.auth.currentUser.uid;
+                                document.getElementById('user-id-display').textContent = `Kullanıcı: ${window.userId}`;
+                            } else {
+                                window.userId = 'fallback-anonymous';
+                                document.getElementById('user-id-display').textContent = `Kullanıcı: Anonim (${window.userId})`;
+                            }
+                            resolve();
+                        }
+                    });
+                });
+                
+                // Firestore listeners setup starts after successful auth
+                if (window.userId && window.db) {
+                     setupFirestoreListeners();
+                }
+
+            } catch (e) {
+                console.error("Firebase initialization failed:", e);
+                document.getElementById('user-id-display').textContent = "Veritabanı Başlatılamadı";
+            }
+        }
+        
+        // Yeni UI güncelleme fonksiyonu
+        window.updateTaskCardUI = (taskId, subTaskStatus) => {
+             const taskCard = document.getElementById(`task-card-${taskId}`);
+             const mainCheckbox = document.getElementById(`completed-A${taskId}`);
+             // window.projectData kullanıldı
+             const currentTaskDetails = window.projectData.details.find(d => d.id === taskId);
+             
+             if (!taskCard || !currentTaskDetails) return;
+
+             let allSubTasksCompleted = true;
+             
+             currentTaskDetails.subTasks.forEach(subTask => {
+                 // Sadece UI'daki alt kutucukların durumunu kontrol et
+                 if (subTaskStatus[subTask.key] !== true) {
+                     allSubTasksCompleted = false;
+                 }
+             });
+
+             if (mainCheckbox) {
+                 mainCheckbox.checked = allSubTasksCompleted; 
+                 // Ana görev tamamlandığında Gantt çubuğunu da görsel olarak güncelleyebiliriz (opsiyonel)
+             }
+             
+             if (allSubTasksCompleted) {
+                 taskCard.classList.add('completed-task');
+             } else {
+                 taskCard.classList.remove('completed-task');
+             }
+             
+             console.log(`Task ${taskId} overall status updated: ${allSubTasksCompleted}`);
+        }
+
+        async function setupFirestoreListeners() {
+            // DEĞİŞİKLİK: Veriyi ortak (public) bir yoldan oku
+            const collectionRef = collection(window.db, `artifacts/${window.appId}/public/data/project_tracking`);
+            
+            onSnapshot(collectionRef, (snapshot) => {
+                snapshot.docChanges().forEach(change => {
+                    const data = change.doc.data();
+                    const taskId = change.doc.id;
+
+                    const notesArea = document.getElementById(`notes-A${taskId}`);
+                    const subTaskStatus = data.subTaskStatus || {};
+                    // window.projectData kullanıldı
+                    const currentTaskDetails = window.projectData.details.find(d => d.id === taskId);
+                    
+                    if (currentTaskDetails && currentTaskDetails.subTasks) {
+                        currentTaskDetails.subTasks.forEach(subTask => {
+                            const subCheckbox = document.getElementById(`sub-A${subTask.key}`);
+                            if (subCheckbox) {
+                                // Firestore'dan gelen veriyi UI'a uygula
+                                subCheckbox.checked = subTaskStatus[subTask.key] || false;
+                            }
+                        });
+                    }
+
+                    if (notesArea) {
+                         notesArea.value = data.notes || '';
+                    }
+
+                    // Alt görev durumlarına göre ana kartı güncelle
+                    window.updateTaskCardUI(taskId, subTaskStatus);
+                });
+                console.log("Task status updated from Firestore.");
+            }, (error) => {
+                console.error("Error listening to Firestore:", error);
+            });
+        }
+        
+        // Alt görev checkbox'larının değiştiğinde Firestore'a yazma ve UI'ı güncelleme
+        window.saveTaskStatus = async (taskId, field, value) => {
+            if (!window.db || !window.userId) {
+                console.warn("Database or User ID is not ready.");
+                return;
+            }
+            try {
+                // DEĞİŞİKLİK: Veriyi ortak (public) bir yola kaydet
+                const docRef = doc(window.db, `artifacts/${window.appId}/public/data/project_tracking`, taskId);
+                
+                let updateData = {};
+                if (field === 'notes') {
+                    updateData = { notes: value };
+                } else if (field.startsWith('sub-')) {
+                    // Update nested subTaskStatus map
+                    const subTaskKey = field.substring(4); 
+                    updateData = { subTaskStatus: { [subTaskKey]: value } };
+                }
+                
+                await setDoc(docRef, updateData, { merge: true });
+                console.log(`Task ${taskId} - ${field} saved.`);
+                
+                // Firestore dinleyicisi otomatik olarak güncel veriyi çekecek ve UI'ı güncelleyecektir (updateTaskCardUI çağrısı dinleyici içinde yapıldı).
+            } catch (e) {
+                console.error("Error saving task status:", e);
+            }
+        }
+        
+        window.initializeFirebaseAndAuth = initializeFirebaseAndAuth;
+
+    </script>
 </head>
 <body class="text-slate-800">
 
@@ -94,7 +282,10 @@
                 <a href="#gorev-dagilimi" class="text-slate-600 hover:text-sky-600 transition">Görev Dağılımı</a>
                 <a href="#teknik-detaylar" class="text-slate-600 hover:text-sky-600 transition">Teknik Detaylar</a>
             </nav>
-            <div id="mobile-menu-button" class="md:hidden text-2xl cursor-pointer">☰</div>
+            <div class="flex items-center gap-4">
+                 <span id="user-id-display" class="text-xs text-slate-500 bg-slate-100 p-2 rounded-lg font-mono">Veri Kaydı Başlatılıyor...</span>
+                 <div id="mobile-menu-button" class="md:hidden text-2xl cursor-pointer">☰</div>
+            </div>
         </div>
         <div id="mobile-menu" class="hidden md:hidden bg-white px-6 pb-4">
              <a href="#proje-akisi" class="block py-2 text-slate-600 hover:text-sky-600 transition">Proje Akışı</a>
@@ -137,8 +328,8 @@
         </section>
 
         <section id="teknik-detaylar">
-            <h2 class="text-3xl font-bold mb-6 header-underline">Teknik Detaylar ve İş Paketleri</h2>
-            <p class="mb-8 text-slate-600 max-w-3xl">Her bir iş paketinin (İP) **Amacı**, **Temel Çıktıları** ve **Başarı Kriterleri** aşağıda detaylandırılmıştır. Daha fazla bilgi için başlıklara tıklayarak ilgili bölümü genişletebilirsiniz.</p>
+            <h2 class="text-3xl font-bold mb-6 header-underline">Teknik Detaylar ve İş Paketleri (Firestore Destekli Takip)</h2>
+            <p class="mb-8 text-slate-600 max-w-3xl">Her bir iş paketinin (İP) detayları, çıktıları ve başarı kriterleri. Aşağıdaki kutucukları işaretleyerek ve not ekleyerek görev durumunu **kalıcı olarak kaydedebilirsiniz** (Firebase Firestore).</p>
             <div id="accordion-container" class="space-y-4">
                 <!-- Accordion items will be generated by JS -->
             </div>
@@ -151,355 +342,459 @@
     </footer>
 
 <script>
-const projectData = {
-    // Toplam süre 52 haftaya yayıldı. Görev süreleri oransal olarak artırıldı ve daha detaylı planlandı.
-    tasks: [
-        // FAZ 1: HAZIRLIK VE TEMEL KURULUM (Hafta 1-8)
-        { id: 'A', name: 'Mekanik Montaj ve Kablolama', sorumlu: 'EEM 1', start: 1, duration: 6, dep: [], discipline: 'eem' },
-        { id: 'E', name: 'Simülasyon Ortamı Kurulumu', sorumlu: 'BM 1', start: 1, duration: 6, dep: [], discipline: 'bm' },
-        { id: 'B', name: 'Uçuş Kontrol ve Kalibrasyon', sorumlu: 'EEM 1', start: 7, duration: 5, dep: ['A'], discipline: 'eem' },
-        { id: 'D', name: 'IoFT Haberleşme Altyapısı', sorumlu: 'BM 2 / EEM 2', start: 7, duration: 8, dep: ['A'], discipline: 'eem' },
-        { id: 'C', name: 'Yapay Zekâ (Görüntü İşleme)', sorumlu: 'BM 1', start: 7, duration: 10, dep: ['E'], discipline: 'bm' },
-        
-        // FAZ 2: ALGORİTMA VE ENTEGRASYON (Hafta 17-30)
-        { id: 'F', name: 'Otonom Güdüm ve Dalış Algoritması', sorumlu: 'BM 2', start: 17, duration: 10, dep: ['C', 'E'], discipline: 'bm' },
-        { id: 'G', name: 'Simülasyon Entegrasyonu ve Testleri', sorumlu: 'BM 2 (Lider)', start: 27, duration: 8, dep: ['C', 'D', 'F'], discipline: 'bm' },
-        
-        // FAZ 3: SAHA UÇUŞLARI VE VERİ TOPLAMA (Hafta 35-46)
-        { id: 'H1', name: 'Temel Uçuş & Donanım Testleri', sorumlu: 'EEM 1 / EEM 2', start: 35, duration: 4, dep: ['B', 'G'], discipline: 'eem' },
-        { id: 'H2', name: 'Entegre Saha Görev Testleri', sorumlu: 'EEM 1 (Lider)', start: 39, duration: 8, dep: ['H1'], discipline: 'eem' },
-        
-        // FAZ 4: ANALİZ VE KAPANIŞ (Hafta 47-52)
-        { id: 'I', name: 'Analiz, Raporlama ve Makale Taslağı', sorumlu: 'BM 1 (Lider)', start: 47, duration: 6, dep: ['H2'], discipline: 'bm' }
-    ],
-    roles: [
-        { 
-            id: 'bm1',
-            title: 'BM 1: Görüntü İşleme & Simülasyon', 
-            icon: '🧠',
-            tasks: ['E', 'C', 'I'],
-            description: 'Yapay zekâ, görüntü işleme algoritmaları ve projenin sanal test ortamının kurulumundan sorumludur.'
-        },
-        { 
-            id: 'bm2',
-            title: 'BM 2: Otonom Güdüm & Ağ Yazılımı', 
-            icon: '💻',
-            tasks: ['D', 'F', 'G'],
-            description: 'İHA\'ların otonom hareket algoritmaları, aralarındaki iletişim yazılımı ve tüm sistemin entegrasyonundan sorumludur.'
-        },
-        { 
-            id: 'eem1',
-            title: 'EEM 1: Mekanik & Uçuş Kontrol', 
-            icon: '🛠️',
-            tasks: ['A', 'B', 'H1', 'H2'],
-            description: 'İHA\'ların fiziksel montajı, uçuş kontrol kartlarının ayarlanması ve saha testlerinin liderliğinden sorumludur.'
-        },
-        { 
-            id: 'eem2',
-            title: 'EEM 2: Haberleşme & Sensörler', 
-            icon: '⚡',
-            tasks: ['D', 'G', 'H1', 'H2'],
-            description: 'Haberleşme donanımları, kamera ve sensörlerin entegrasyonu ile saha testleri sırasında veri takibinden sorumludur.'
-        }
-    ],
-    details: [
-        { 
-            id: 'A', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> İki adet sabit kanatlı İHA platformunun fiziksel olarak uçuşa hazır hale getirilmesi ve aviyonik bileşenlerin montajının tamamlanması.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>İHA Gövdelerinin Mekanik Montaj Raporu.</li>
-                    <li>Motor, ESC (SkyWalker 80A), Servo motor (MG90S) ve güç sistemlerinin (14.8V Lipo Batarya, UBEC) güvenli kablolama diyagramı ve test protokolü.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Tüm donanım bileşenlerinin (Motor, ESC, Servo) RC Kumanda ile manuel olarak kontrol edilebilir ve test voltajlarında sorunsuz çalışabilir durumda olması.
-            `
-        },
-        { 
-            id: 'E', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Projenin algoritmik geliştirme ve ön test aşamaları için gerçekçi bir sanal ortamın kurulması.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>Görev bilgisayarlarında (RPi/Jetson) ROS2 (Robot Operating System 2) ve Gazebo simülasyon yazılımlarının stabil kurulumu.</li>
-                    <li>Sabit kanatlı İHA (Keşif/Kamikaze) modellerinin Gazebo ortamına entegrasyonu. Sanal gimbal, GPS ve kamera arayüzlerinin ROS2 topic'ler üzerinden çalışır hale getirilmesi.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> İki İHA modelinin de Gazebo'da otonom uçuşa uygun bir şekilde simüle edilebilir ve ROS2 üzerinden kontrol edilebilir olması.
-            `
-        },
-        { 
-            id: 'B', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Pixhawk otopilotların uçuşa hazırlanması ve temel stabilite ayarlarının yapılması.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>PX4 uçuş kontrol yazılımının yüklenmesi ve tüm sensör (IMU, GPS, Pusula) kalibrasyonlarının tamamlanması.</li>
-                    <li>Uçuş modlarının (Stabilize, Otonom, Görev) ayarlanması ve RC Kumanda ile tam uyumluluk testi.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> İHA'ların yer testlerinde (motor, kontrol yüzeyleri) hatasız tepki vermesi ve Pixhawk'ın uçuş öncesi tüm kontrol listelerini (pre-flight checks) geçmesi.
-            `
-        },
-        { 
-            id: 'D', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Merkeziyetsiz İHA-İHA ve İHA-Bulut iletişim altyapısının donanımsal ve yazılımsal olarak kurulması.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>LoRa modüllerinin (SX1262 HAT) ve GSM modülünün (SIM808) görev bilgisayarına entegrasyonu ve sürücü kurulumu.</li>
-                    <li>İHA-İHA arası koordinat veri paketlerini işleyen ve minimum 50ms gecikmeyi hedefleyen LoRa iletişim protokolü yazılımı.</li>
-                    <li>Keşif İHA'sından telemetri verilerini bulut platformuna aktaran GSM/MQTT yazılımının geliştirilmesi.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> LoRa üzerinden iki İHA arasında %95 üzeri veri bütünlüğü ile 1 km menzilde veri transferinin sağlanması.
-            `
-        },
-        { 
-            id: 'C', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Yüksek doğrulukta hedef tespiti ve konumlandırma için hibrit yapay zekâ algoritmalarının geliştirilmesi.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>YOLO tabanlı nesne tespit modelinin prototip QR kod tespiti için hazırlanması ve optimizasyonu.</li>
-                    <li>Görüntüdeki potansiyel hedef bölgelerini hızlıca daraltan Adaptive Thresholding ve kenar algılama ön işlem kodunun yazılması.</li>
-                    <li>Tespit edilen hedefin kamera parametreleri ve İHA konumu kullanılarak GPS koordinatını ($\mathbf{\pm2}$ metre hassasiyetle) hesaplayan Fotogrametrik Konumlandırma Modülü.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Simülasyon ortamında QR kod hedeflerini $\mathbf{\%90}$ üzeri doğrulukla ve $\mathbf{\pm2}$ metre konum hassasiyetiyle tespit edebilen entegre yazılım modülü.
-            `
-        },
-        { 
-            id: 'F', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Kamikaze İHA'sının aldığı koordinatlara göre otonom ve kararlı bir saldırı rotası planlayıp icra etmesi.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>Hedef koordinatlarına göre en uygun dalış açısını ve hızını belirleyen Rota Planlama Algoritması.</li>
-                    <li>PX4'ün güdüm komutları kullanılarak hedefe $\mathbf{\pm5}$ metre hassasiyetle yaklaşmayı sağlayan Otonom Güdüm ve Kontrol Modülü.</li>
-                    <li>Görev sonrası İHA'nın güvenli irtifaya tırmanmasını ve geri dönmesini sağlayan Kurtarma Prosedürü yazılımı.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Simülasyon ortamında otonom dalışın hedeften sapma miktarının sürekli olarak $\mathbf{<5}$ metre aralığında kalması.
-            `
-        },
-        { 
-            id: 'G', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Tüm yazılımların (C, D, F) sanal ortamda bir araya getirilerek uçtan uca senaryonun test edilmesi ve optimizasyonu.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>Keşif (Yapay Zekâ) ve Kamikaze (Güdüm) İHA'ları arasındaki veri akışını gösteren Simülasyon Veri Seti.</li>
-                    <li>Simülasyon Hata Ayıklama Raporu ve Algoritma Optimizasyon Kayıtları.</li>
-                    <li>Simülasyon Başarı Raporu.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Simülasyon ortamında Keşif-Tespit-Aktarım-Yaklaşım senaryosunun genel görev başarı oranının $\mathbf{\%90}$ ve üzerinde olması. Bu, saha testleri için ön şarttır.
-            `
-        },
-        { 
-            id: 'H1', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Sistemin ayrı ayrı temel işlevselliğini gerçek donanım ve uçuş koşullarında doğrulamak.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>Keşif İHA'sının otonom kalkış, belirli bir rotada stabil uçuş ve iniş testleri.</li>
-                    <li>LoRa/GSM modülleri üzerinden yer istasyonuna kesintisiz telemetri veri aktarım testleri.</li>
-                    <li>Yerel alan kamerası (QR kod) tespit ve koordinat hesaplama hızının statik yer testleri.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Her iki İHA'nın da tüm otonom uçuş modlarında stabil ve güvenli şekilde uçuş yapabildiğinin kanıtlanması.
-            `
-        },
-        { 
-            id: 'H2', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Tüm sistemin gerçek uçuş koşullarında entegre olarak tam görev senaryosunu gerçekleştirmesi.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>Gerçek zamanlı hedef tespiti ve aktarımı gecikme (Latency) metrikleri.</li>
-                    <li>Kamikaze İHA'sının hedefe yaklaşma hassasiyeti (metre bazında sapma) kayıtları.</li>
-                    <li>Uçuş sırasında elde edilen tüm telemetri ve görev verilerinin veri tabanı kaydı.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Tam görev senaryosunun tekrarlanabilir şekilde $\mathbf{\%80}$ ve üzeri genel görev başarı oranıyla tamamlanması.
-            `
-        },
-        { 
-            id: 'I', 
-            content: `
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Elde edilen tüm verilerin analiz edilmesi ve projenin bilimsel çıktılarının oluşturulması.
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
-                <ul class="list-disc list-inside ml-4 text-sm">
-                    <li>Simülasyon ve Saha Sonuçlarının Karşılaştırmalı Performans Analiz Raporu.</li>
-                    <li>Proje Sonuç Raporu ve Nihai Proje Sunumu.</li>
-                    <li>En az 1 adet ulusal/uluslararası konferans bildirisi veya makale taslağı.</li>
-                </ul>
-                <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Tüm hipotezlerin toplanan nicel verilerle desteklenerek veya çürütülerek bilimsel bir dille belgelenmesi.
-            `
-        }
-    ]
-};
-
-document.addEventListener('DOMContentLoaded', () => {
-    const ganttChart = document.getElementById('gantt-chart');
-    const ganttHeaderContainer = document.querySelector('.gantt-grid');
-    const rolesContainer = document.querySelector('#gorev-dagilimi .grid');
-    const accordionContainer = document.getElementById('accordion-container');
-    
-    // Generate Gantt Headers (1 to 52)
-    for (let i = 1; i <= 52; i++) {
-        const headerCell = document.createElement('div');
-        // Haftaları daha anlaşılır göstermek için her 4 haftada bir numara yazdır
-        headerCell.textContent = (i % 4 === 0) ? `${i}.H` : '';
-        headerCell.className = `text-xs text-center ${(i % 4 === 0) ? 'font-bold' : ''}`;
-        ganttHeaderContainer.appendChild(headerCell);
-    }
-
-    // Generate Gantt Chart & Accordion
-    projectData.tasks.forEach(task => {
-        // Gantt Row
-        const label = document.createElement('div');
-        label.className = 'gantt-label bg-slate-50 rounded-l-lg font-medium text-sm text-slate-700';
-        label.textContent = `İP ${task.id}`;
-
-        const grid = document.createElement('div');
-        grid.className = 'gantt-grid';
-
-        const bar = document.createElement('div');
-        bar.className = `gantt-bar bg-${task.discipline} text-white text-xs flex items-center justify-center p-1 rounded-lg h-[40px] shadow`;
-        bar.style.setProperty('--start', task.start);
-        bar.style.setProperty('--duration', task.duration);
-        bar.textContent = task.name;
-        bar.dataset.taskId = task.id;
-        bar.dataset.discipline = task.discipline;
-
-        grid.appendChild(bar);
-        ganttChart.appendChild(label);
-        ganttChart.appendChild(grid);
-        
-        // Accordion Item
-        const detail = projectData.details.find(d => d.id === task.id);
-        const accordionItem = document.createElement('div');
-        accordionItem.id = `task-card-${task.id}`;
-        accordionItem.className = `task-card bg-white rounded-2xl shadow-lg border-l-8 border-${task.discipline} transition-all duration-300 overflow-hidden`;
-
-        accordionItem.innerHTML = `
-            <div class="accordion-header p-5 cursor-pointer flex justify-between items-center">
-                <div>
-                    <h3 class="font-bold text-lg">${task.id}: ${task.name}</h3>
-                    <p class="text-sm text-slate-500">Sorumlu: ${task.sorumlu} | Süre: ${task.duration} Hafta</p>
-                </div>
-                <span class="text-2xl font-light text-slate-500 transform transition-transform duration-300">+</span>
-            </div>
-            <div class="accordion-content">
-                <div class="p-5 pt-0 text-slate-600">
-                    ${detail.content}
-                </div>
-            </div>
-        `;
-        accordionContainer.appendChild(accordionItem);
-    });
-
-    // Generate Role Cards
-    projectData.roles.forEach(role => {
-        const card = document.createElement('div');
-        card.className = 'bg-white p-6 rounded-2xl shadow-lg flex flex-col';
-        card.innerHTML = `
-            <div class="flex items-center gap-4 mb-4">
-                <span class="text-4xl">${role.icon}</span>
-                <h3 class="text-xl font-bold">${role.title}</h3>
-            </div>
-            <p class="text-slate-600 mb-4 flex-grow">${role.description}</p>
-            <button data-role-id="${role.id}" class="filter-btn mt-auto w-full bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg transition hover:bg-sky-200">
-                Görevleri Vurgula
-            </button>
-        `;
-        rolesContainer.appendChild(card);
-    });
-    
-    // Accordion Logic
-    accordionContainer.addEventListener('click', (e) => {
-        const header = e.target.closest('.accordion-header');
-        if (!header) return;
-
-        const accordionItem = header.parentElement;
-        const content = accordionItem.querySelector('.accordion-content');
-        const icon = header.querySelector('span');
-        const isOpen = content.style.maxHeight;
-        
-        // Close all others
-        accordionContainer.querySelectorAll('.accordion-content').forEach(c => c.style.maxHeight = null);
-        accordionContainer.querySelectorAll('.accordion-header span').forEach(i => i.classList.remove('rotate-45'));
-
-        if (!isOpen) {
-            content.style.maxHeight = content.scrollHeight + "px";
-            icon.classList.add('rotate-45');
-        }
-    });
-
-    // Gantt Bar Click Logic
-    ganttChart.addEventListener('click', (e) => {
-        const bar = e.target.closest('.gantt-bar');
-        if(!bar) return;
-
-        const taskId = bar.dataset.taskId;
-        const targetCard = document.getElementById(`task-card-${taskId}`);
-
-        if (targetCard) {
-            // Remove highlight from all cards
-            document.querySelectorAll('.task-card').forEach(card => card.classList.remove('highlight'));
+    // projectData'nın global erişilebilir olması için window objesine taşındı.
+    window.projectData = {
+        // Toplam süre 52 haftaya yayıldı. Görev süreleri oransal olarak artırıldı ve daha detaylı planlandı.
+        tasks: [
+            // FAZ 1: HAZIRLIK VE TEMEL KURULUM (Hafta 1-8)
+            { id: 'A', name: 'Mekanik Montaj ve Kablolama', sorumlu: 'EEM 1', start: 1, duration: 6, dep: [], discipline: 'eem' },
+            { id: 'E', name: 'Simülasyon Ortamı Kurulumu', sorumlu: 'BM 1', start: 1, duration: 6, dep: [], discipline: 'bm' },
+            { id: 'B', name: 'Uçuş Kontrol ve Kalibrasyon', sorumlu: 'EEM 1', start: 7, duration: 5, dep: ['A'], discipline: 'eem' },
+            { id: 'D', name: 'IoFT Haberleşme Altyapısı', sorumlu: 'BM 2 / EEM 2', start: 7, duration: 8, dep: ['A'], discipline: 'eem' },
+            { id: 'C', name: 'Yapay Zekâ (Görüntü İşleme)', sorumlu: 'BM 1', start: 7, duration: 10, dep: ['E'], discipline: 'bm' },
             
-            // Add highlight to target card
-            targetCard.classList.add('highlight');
-            targetCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-            // Open the accordion
-            const content = targetCard.querySelector('.accordion-content');
-             if (!content.style.maxHeight) {
-                targetCard.querySelector('.accordion-header').click();
-             }
-        }
-    });
-    
-    // Filter Logic - Yenilenmiş ve İyileştirilmiş
-    let activeFilter = null;
-    document.querySelectorAll('.filter-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const roleId = btn.dataset.roleId;
-            const roleTasks = projectData.roles.find(r => r.id === roleId).tasks;
-            const ganttBars = document.querySelectorAll('.gantt-bar');
+            // FAZ 2: ALGORİTMA VE ENTEGRASYON (Hafta 17-30)
+            { id: 'F', name: 'Otonom Güdüm ve Dalış Algoritması', sorumlu: 'BM 2', start: 17, duration: 10, dep: ['C', 'E'], discipline: 'bm' },
+            { id: 'G', name: 'Simülasyon Entegrasyonu ve Testleri', sorumlu: 'BM 2 (Lider)', start: 27, duration: 8, dep: ['C', 'D', 'F'], discipline: 'bm' },
             
-            if (activeFilter === roleId) {
-                // Filtreyi Kaldır
-                ganttBars.forEach(bar => bar.classList.remove('gantt-bar-dimmed'));
-                btn.classList.remove('filter-active');
-                activeFilter = null;
-            } else {
-                // Diğer butonları deaktif et
-                 document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('filter-active'));
-                 
-                // Bu filtreyi aktif et
-                btn.classList.add('filter-active');
-                activeFilter = roleId;
+            // FAZ 3: SAHA UÇUŞLARI VE VERİ TOPLAMA (Hafta 35-46)
+            { id: 'H1', name: 'Temel Uçuş & Donanım Testleri', sorumlu: 'EEM 1 / EEM 2', start: 35, duration: 4, dep: ['B', 'G'], discipline: 'eem' },
+            { id: 'H2', name: 'Entegre Saha Görev Testleri', sorumlu: 'EEM 1 (Lider)', start: 39, duration: 8, dep: ['H1'], discipline: 'eem' },
+            
+            // FAZ 4: ANALİZ VE KAPANIŞ (Hafta 47-52)
+            { id: 'I', name: 'Analiz, Raporlama ve Makale Taslağı', sorumlu: 'BM 1 (Lider)', start: 47, duration: 6, dep: ['H2'], discipline: 'bm' }
+        ],
+        roles: [
+            { 
+                id: 'bm1',
+                title: 'BM 1: Görüntü İşleme & Simülasyon', 
+                icon: '🧠',
+                tasks: ['E', 'C', 'I'],
+                description: 'Yapay zekâ, görüntü işleme algoritmaları ve projenin sanal test ortamının kurulumundan sorumludur.'
+            },
+            { 
+                id: 'bm2',
+                title: 'BM 2: Otonom Güdüm & Ağ Yazılımı', 
+                icon: '💻',
+                tasks: ['D', 'F', 'G'],
+                description: 'İHA\'ların otonom hareket algoritmaları, aralarındaki iletişim yazılımı ve tüm sistemin entegrasyonundan sorumludur.'
+            },
+            { 
+                id: 'eem1',
+                title: 'EEM 1: Mekanik & Uçuş Kontrol', 
+                icon: '🛠️',
+                tasks: ['A', 'B', 'H1', 'H2'],
+                description: 'İHA\'ların fiziksel montajı, uçuş kontrol kartlarının ayarlanması ve saha testlerinin liderliğinden sorumludur.'
+            },
+            { 
+                id: 'eem2',
+                title: 'EEM 2: Haberleşme & Sensörler', 
+                icon: '⚡',
+                tasks: ['D', 'G', 'H1', 'H2'],
+                description: 'Haberleşme donanımları, kamera ve sensörlerin entegrasyonu ile saha testleri sırasında veri takibinden sorumludur.'
+            }
+        ],
+        details: [
+            { 
+                id: 'A', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> İki adet sabit kanatlı İHA platformunun fiziksel olarak uçuşa hazır hale getirilmesi ve aviyonik bileşenlerin montajının tamamlanması.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>İHA Gövdelerinin Mekanik Montaj Raporu.</li>
+                        <li>Motor, ESC (SkyWalker 80A), Servo motor (MG90S) ve güç sistemlerinin (14.8V Lipo Batarya, UBEC) güvenli kablolama diyagramı ve test protokolü.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Tüm donanım bileşenlerinin (Motor, ESC, Servo) RC Kumanda ile manuel olarak kontrol edilebilir ve test voltajlarında sorunsuz çalışabilir durumda olması.
+                `,
+                subTasks: [
+                    { key: 'A1', description: 'Mekanik Montajın Tamamlanması ve Test Raporu' },
+                    { key: 'A2', description: 'Motor, ESC ve Servo Kablolamasının Güvenlik Kontrolü' },
+                    { key: 'A3', description: 'Güç Sistemlerinin (Batarya, UBEC) İlk Çalıştırma Testi' }
+                ]
+            },
+            { 
+                id: 'E', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Projenin algoritmik geliştirme ve ön test aşamaları için gerçekçi bir sanal ortamın kurulması.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>Görev bilgisayarlarında (RPi/Jetson) ROS2 (Robot Operating System 2) ve Gazebo simülasyon yazılımlarının stabil kurulumu.</li>
+                        <li>Sabit kanatlı İHA (Keşif/Kamikaze) modellerinin Gazebo ortamına entegrasyonu. Sanal gimbal, GPS ve kamera arayüzlerinin ROS2 topic'ler üzerinden çalışır hale getirilmesi.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> İki İHA modelinin de Gazebo'da otonom uçuşa uygun bir şekilde simüle edilebilir ve ROS2 üzerinden kontrol edilebilir olması.
+                `,
+                subTasks: [
+                    { key: 'E1', description: 'ROS2 ve Gazebo Kurulumu' },
+                    { key: 'E2', description: 'İHA Modellerinin Gazebo\'ya Entegrasyonu' },
+                    { key: 'E3', description: 'Sanal Sensör ve Kontrol Arayüzlerinin ROS2 Üzerinde Doğrulanması' }
+                ]
+            },
+            { 
+                id: 'B', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Pixhawk otopilotların uçuşa hazırlanması ve temel stabilite ayarlarının yapılması.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>PX4 uçuş kontrol yazılımının yüklenmesi ve tüm sensör (IMU, GPS, Pusula) kalibrasyonlarının tamamlanması.</li>
+                        <li>Uçuş modlarının (Stabilize, Otonom, Görev) ayarlanması ve RC Kumanda ile tam uyumluluk testi.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> İHA'ların yer testlerinde (motor, kontrol yüzeyleri) hatasız tepki vermesi ve Pixhawk'ın uçuş öncesi tüm kontrol listelerini (pre-flight checks) geçmesi.
+                `,
+                 subTasks: [
+                    { key: 'B1', description: 'PX4 Yazılım Yüklemesi ve Sensör Kalibrasyonu' },
+                    { key: 'B2', description: 'Uçuş Modları Tanımlanması ve Kontrol Testleri' },
+                    { key: 'B3', description: 'RC Kumanda Uyum Testleri ve Güvenlik Kontrolleri' }
+                ]
+            },
+            { 
+                id: 'D', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Merkeziyetsiz İHA-İHA ve İHA-Bulut iletişim altyapısının donanımsal ve yazılımsal olarak kurulması.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>LoRa modüllerinin (SX1262 HAT) ve GSM modülünün (SIM808) görev bilgisayarına entegrasyonu ve sürücü kurulumu.</li>
+                        <li>İHA-İHA arası koordinat veri paketlerini işleyen ve minimum 50ms gecikmeyi hedefleyen LoRa iletişim protokolü yazılımı.</li>
+                        <li>Keşif İHA'sından telemetri verilerini bulut platformuna aktaran GSM/MQTT yazılımının geliştirilmesi.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> LoRa üzerinden iki İHA arasında %95 üzeri veri bütünlüğü ile 1 km menzilde veri transferinin sağlanması.
+                `,
+                subTasks: [
+                    { key: 'D1', description: 'LoRa/GSM Donanım ve Sürücü Entegrasyonu' },
+                    { key: 'D2', description: 'LoRa İletişim Protokolü Yazılım Geliştirme' },
+                    { key: 'D3', description: 'GSM/MQTT Telemetri Aktarım Yazılımı' },
+                    { key: 'D4', description: 'İlk Gecikme ve Menzil Testleri' }
+                ]
+            },
+            { 
+                id: 'C', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Yüksek doğrulukta hedef tespiti ve konumlandırma için hibrit yapay zekâ algoritmalarının geliştirilmesi.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>YOLO tabanlı nesne tespit modelinin prototip QR kod tespiti için hazırlanması ve optimizasyonu.</li>
+                        <li>Görüntüdeki potansiyel hedef bölgelerini hızlıca daraltan Adaptive Thresholding ve kenar algılama ön işlem kodunun yazılması.</li>
+                        <li>Tespit edilen hedefin kamera parametreleri ve İHA konumu kullanılarak GPS koordinatını ($\mathbf{\pm2}$ metre hassasiyetle) hesaplayan Fotogrametrik Konumlandırma Modülü.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Simülasyon ortamında QR kod hedeflerini $\mathbf{\%90}$ üzeri doğrulukla ve $\mathbf{\pm2}$ metre konum hassasiyetiyle tespit edebilen entegre yazılım modülü.
+                `,
+                subTasks: [
+                    { key: 'C1', description: 'YOLO Modelinin QR Kod için Eğitilmesi ve Optimizasyonu' },
+                    { key: 'C2', description: 'Adaptive Thresholding Ön İşlem Kodunun Geliştirilmesi' },
+                    { key: 'C3', description: 'Fotogrametrik Konumlandırma Modülü Yazılımı' }
+                ]
+            },
+            { 
+                id: 'F', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Kamikaze İHA'sının aldığı koordinatlara göre otonom ve kararlı bir saldırı rotası planlayıp icra etmesi.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>Hedef koordinatlarına göre en uygun dalış açısını ve hızını belirleyen Rota Planlama Algoritması.</li>
+                        <li>PX4'ün güdüm komutları kullanılarak hedefe $\mathbf{\pm5}$ metre hassasiyetle yaklaşmayı sağlayan Otonom Güdüm ve Kontrol Modülü.</li>
+                        <li>Görev sonrası İHA'nın güvenli irtifaya tırmanmasını ve geri dönmesini sağlayan Kurtarma Prosedürü yazılımı.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Simülasyon ortamında otonom dalışın hedeften sapma miktarının sürekli olarak $\mathbf{<5}$ metre aralığında kalması.
+                `,
+                subTasks: [
+                    { key: 'F1', description: 'Rota Planlama Algoritması Geliştirilmesi' },
+                    { key: 'F2', description: 'Otonom Güdüm ve Kontrol Modülü Yazılımı' },
+                    { key: 'F3', description: 'Kurtarma Prosedürü Yazılımı' }
+                ]
+            },
+            { 
+                id: 'G', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Tüm yazılımların (C, D, F) sanal ortamda bir araya getirilerek uçtan uca senaryonun test edilmesi ve optimizasyonu.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>Keşif (Yapay Zekâ) ve Kamikaze (Güdüm) İHA'ları arasındaki veri akışını gösteren Simülasyon Veri Seti.</li>
+                        <li>Simülasyon Hata Ayıklama Raporu ve Algoritma Optimizasyon Kayıtları.</li>
+                        <li>Simülasyon Başarı Raporu.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Simülasyon ortamında Keşif-Tespit-Aktarım-Yaklaşım senaryosunun genel görev başarı oranının $\mathbf{\%90}$ ve üzerinde olması. Bu, saha testleri için ön şarttır.
+                `,
+                subTasks: [
+                    { key: 'G1', description: 'Tüm Yazılımların ROS2/Gazebo Ortamına Entegrasyonu' },
+                    { key: 'G2', description: 'Uçtan Uca Simülasyon Senaryosu Testi' },
+                    { key: 'G3', description: 'Hata Ayıklama ve %90 Başarı Oranı Optimizasyonu' }
+                ]
+            },
+            { 
+                id: 'H1', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Sistemin ayrı ayrı temel işlevselliğini gerçek donanım ve uçuş koşullarında doğrulamak.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>Keşif İHA'sının otonom kalkış, belirli bir rotada stabil uçuş ve iniş testleri.</li>
+                        <li>LoRa/GSM modülleri üzerinden yer istasyonuna kesintisiz telemetri veri aktarım testleri.</li>
+                        <li>Yerel alan kamerası (QR kod) tespit ve koordinat hesaplama hızının statik yer testleri.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Her iki İHA'nın da tüm otonom uçuş modlarında stabil ve güvenli şekilde uçuş yapabildiğinin kanıtlanması.
+                `,
+                subTasks: [
+                    { key: 'H1.1', description: 'Keşif İHA Temel Otonom Uçuş Testleri' },
+                    { key: 'H1.2', description: 'Kamikaze İHA Temel Otonom Uçuş Testleri' },
+                    { key: 'H1.3', description: 'LoRa/GSM Telemetri Aktarımının Saha Doğrulaması' }
+                ]
+            },
+            { 
+                id: 'H2', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Tüm sistemin gerçek uçuş koşullarında entegre olarak tam görev senaryosunu gerçekleştirmesi.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>Gerçek zamanlı hedef tespiti ve aktarımı gecikme (Latency) metrikleri.</li>
+                        <li>Kamikaze İHA'sının hedefe yaklaşma hassasiyeti (metre bazında sapma) kayıtları.</li>
+                        <li>Uçuş sırasında elde edilen tüm telemetri ve görev verilerinin veri tabanı kaydı.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Tam görev senaryosunun tekrarlanabilir şekilde $\mathbf{\%80}$ ve üzeri genel görev başarı oranıyla tamamlanması.
+                `,
+                 subTasks: [
+                    { key: 'H2.1', description: 'Uçtan Uca Saha Testi 1 (Düşük Rüzgar)' },
+                    { key: 'H2.2', description: 'Uçtan Uca Saha Testi 2 (Hafif Rüzgar/Değişen Koşullar)' },
+                    { key: 'H2.3', description: 'Görev Başarı Oranı ve Hassasiyet Metriklerinin Toplanması' }
+                ]
+            },
+            { 
+                id: 'I', 
+                content: `
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Amaç:</h4> Elde edilen tüm verilerin analiz edilmesi ve projenin bilimsel çıktılarının oluşturulması.
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Temel Çıktılar:</h4> 
+                    <ul class="list-disc list-inside ml-4 text-sm">
+                        <li>Simülasyon ve Saha Sonuçlarının Karşılaştırmalı Performans Analiz Raporu.</li>
+                        <li>Proje Sonuç Raporu ve Nihai Proje Sunumu.</li>
+                        <li>En az 1 adet ulusal/uluslararası konferans bildirisi veya makale taslağı.</li>
+                    </ul>
+                    <h4 class="font-semibold text-sky-600 mt-2 mb-1">Başarı Kriteri:</h4> Tüm hipotezlerin toplanan nicel verilerle desteklenerek veya çürütülerek bilimsel bir dille belgelenmesi.
+                `,
+                subTasks: [
+                    { key: 'I1', description: 'Tüm Saha Verilerinin İstatistiksel Analizi' },
+                    { key: 'I2', description: 'Sonuç Raporu Taslağının Hazırlanması' },
+                    { key: 'I3', description: 'Makale veya Bildiri Taslağının Oluşturulması' }
+                ]
+            }
+        ]
+    };
 
-                ganttBars.forEach(bar => {
-                    if (roleTasks.includes(bar.dataset.taskId)) {
-                        bar.classList.remove('gantt-bar-dimmed'); // Vurgula
+    document.addEventListener('DOMContentLoaded', () => {
+        // Firebase Auth başlatıldıktan sonra JS kodu devam eder.
+        window.initializeFirebaseAndAuth().then(() => {
+             // Firebase'in başlatıldığından emin olduktan sonra Gantt/Accordion oluşturulur.
+             renderProjectUI();
+        });
+
+
+        const ganttChart = document.getElementById('gantt-chart');
+        const ganttHeaderContainer = document.querySelector('.gantt-grid');
+        const rolesContainer = document.querySelector('#gorev-dagilimi .grid');
+        const accordionContainer = document.getElementById('accordion-container');
+        
+        // Generate Gantt Headers (1 to 52)
+        for (let i = 1; i <= 52; i++) {
+            const headerCell = document.createElement('div');
+            // Haftaları daha anlaşılır göstermek için her 4 haftada bir numara yazdır
+            headerCell.textContent = (i % 4 === 0) ? `${i}.H` : '';
+            headerCell.className = `text-xs text-center ${(i % 4 === 0) ? 'font-bold' : ''}`;
+            ganttHeaderContainer.appendChild(headerCell);
+        }
+
+        function renderProjectUI() {
+            // Clear existing content before re-rendering
+            accordionContainer.innerHTML = '';
+            
+            // Generate Gantt Chart & Accordion
+            window.projectData.tasks.forEach(task => {
+                // GANTT CHART RENDERING (DÜZELTME YAPILDI)
+                const endLine = task.start + task.duration;
+                const label = document.createElement('div');
+                label.className = 'gantt-label bg-slate-50 rounded-l-lg font-medium text-sm text-slate-700';
+                label.textContent = `İP ${task.id}`;
+
+                const grid = document.createElement('div');
+                grid.className = 'gantt-grid';
+
+                const bar = document.createElement('div');
+                // Removed 'text-xs' class as font size is handled by style block (0.6rem)
+                bar.className = `gantt-bar bg-${task.discipline} text-white flex items-center justify-center p-1 rounded-lg h-[40px] shadow`;
+                // Grid-column özelliği doğrudan atanarak CSS değişkeni bağımlılığı giderildi
+                bar.style.gridColumn = `${task.start} / ${endLine}`; 
+                bar.textContent = task.name;
+                bar.dataset.taskId = task.id;
+                bar.dataset.discipline = task.discipline;
+
+                grid.appendChild(bar);
+                ganttChart.appendChild(label);
+                ganttChart.appendChild(grid);
+                
+                // Accordion Item
+                const detail = window.projectData.details.find(d => d.id === task.id);
+                const accordionItem = document.createElement('div');
+                accordionItem.id = `task-card-${task.id}`;
+                accordionItem.className = `task-card bg-white rounded-2xl shadow-lg border-l-8 border-${task.discipline} transition-all duration-300 overflow-hidden`;
+
+                // Sub-task checkboxes HTML generation
+                let subTasksHtml = '';
+                if (detail && detail.subTasks && detail.subTasks.length > 0) {
+                    subTasksHtml = `
+                        <h5 class="font-bold text-lg text-slate-700 mb-3 mt-4">Detaylı Çıktılar / Alt Görevler:</h5>
+                        <div class="space-y-2 mb-4">
+                    `;
+                    detail.subTasks.forEach(subTask => {
+                        subTasksHtml += `
+                            <div class="flex items-start">
+                                <input type="checkbox" id="sub-A${subTask.key}" data-task-id="${task.id}" class="sub-task-checkbox h-5 w-5 text-green-600 border-gray-300 rounded focus:ring-green-500 cursor-pointer mt-1" 
+                                       onchange="window.saveTaskStatus('${task.id}', 'sub-${subTask.key}', this.checked);">
+                                <label for="sub-A${subTask.key}" class="sub-task-label ml-3 text-base text-slate-700 cursor-pointer">${subTask.description}</label>
+                            </div>
+                        `;
+                    });
+                    subTasksHtml += '</div>';
+                }
+
+                accordionItem.innerHTML = `
+                    <div class="accordion-header p-5 cursor-pointer flex justify-between items-center">
+                        <div class="flex items-center gap-3">
+                            <h3 class="font-bold text-lg">${task.id}: ${task.name}</h3>
+                            <span class="text-sm text-slate-500">| Sorumlu: ${task.sorumlu} | Süre: ${task.duration} Hafta</span>
+                        </div>
+                        <span class="text-2xl font-light text-slate-500 accordion-icon">+</span>
+                    </div>
+                    <div class="accordion-content">
+                        <div class="p-5 pt-0 text-slate-600">
+                             <!-- Detaylı İçerik -->
+                             ${detail.content}
+                             
+                             <div class="mt-6 pt-4 border-t border-slate-200">
+                                <h5 class="font-bold text-lg text-slate-700 mb-3">Görev Takibi (Kalıcı Kayıt)</h5>
+                                
+                                ${subTasksHtml}
+
+                                <div class="flex items-start gap-4 mb-4 pt-4 border-t border-slate-100">
+                                    <input type="checkbox" id="completed-A${task.id}" data-task-id="${task.id}" class="h-6 w-6 text-green-600 border-gray-300 rounded focus:ring-green-500 cursor-pointer" disabled>
+                                    <label for="completed-A${task.id}" class="text-lg font-medium text-green-700">İş Paketi Tamamlandı (Tüm Alt Görevler Bitince Otomatik)</label>
+                                </div>
+                                <label for="notes-A${task.id}" class="block text-sm font-medium text-slate-700 mb-1">Görev Notları (Maksimum 500 karakter):</label>
+                                <textarea id="notes-A${task.id}" data-task-id="${task.id}" rows="4" maxlength="500"
+                                          class="w-full border border-slate-300 rounded-lg p-3 text-sm focus:border-sky-500 focus:ring-sky-500 transition"
+                                          onchange="window.saveTaskStatus('${task.id}', 'notes', this.value);"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                accordionContainer.appendChild(accordionItem);
+            });
+
+            // Generate Role Cards (no change, kept for completeness)
+            window.projectData.roles.forEach(role => {
+                const card = document.createElement('div');
+                card.className = 'bg-white p-6 rounded-2xl shadow-lg flex flex-col';
+                card.innerHTML = `
+                    <div class="flex items-center gap-4 mb-4">
+                        <span class="text-4xl">${role.icon}</span>
+                        <h3 class="text-xl font-bold">${role.title}</h3>
+                    </div>
+                    <p class="text-slate-600 mb-4 flex-grow">${role.description}</p>
+                    <button data-role-id="${role.id}" class="filter-btn mt-auto w-full bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg transition hover:bg-sky-200">
+                        Görevleri Vurgula
+                    </button>
+                `;
+                rolesContainer.appendChild(card);
+            });
+            
+            // Re-apply event listeners for accordion and filtering (no changes here)
+            // Accordion Logic
+            accordionContainer.addEventListener('click', (e) => {
+                const header = e.target.closest('.accordion-header');
+                if (!header) return;
+
+                const accordionItem = header.parentElement;
+                const content = accordionItem.querySelector('.accordion-content');
+                // Simgeyi seçmek için yeni sınıfı kullan
+                const icon = header.querySelector('.accordion-icon');
+                const isOpen = content.style.maxHeight;
+                
+                // Close all others
+                accordionContainer.querySelectorAll('.accordion-content').forEach(c => c.style.maxHeight = null);
+                accordionContainer.querySelectorAll('.accordion-icon').forEach(i => i.classList.remove('rotate-45'));
+
+                if (!isOpen) {
+                    content.style.maxHeight = content.scrollHeight + "px";
+                    icon.classList.add('rotate-45');
+                }
+            });
+
+            // Gantt Bar Click Logic
+            ganttChart.addEventListener('click', (e) => {
+                const bar = e.target.closest('.gantt-bar');
+                if(!bar) return;
+
+                const taskId = bar.dataset.taskId;
+                const targetCard = document.getElementById(`task-card-${taskId}`);
+
+                if (targetCard) {
+                    // Remove highlight from all cards
+                    document.querySelectorAll('.task-card').forEach(card => card.classList.remove('highlight'));
+                    
+                    // Add highlight to target card
+                    targetCard.classList.add('highlight');
+                    targetCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+                    // Open the accordion
+                    const content = targetCard.querySelector('.accordion-content');
+                     if (!content.style.maxHeight) {
+                        targetCard.querySelector('.accordion-header').click();
+                     }
+                }
+            });
+            
+            // Filter Logic - Yenilenmiş ve İyileştirilmiş
+            let activeFilter = null;
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    // window.projectData kullanıldı
+                    const roleId = btn.dataset.roleId;
+                    const roleTasks = window.projectData.roles.find(r => r.id === roleId).tasks;
+                    const ganttBars = document.querySelectorAll('.gantt-bar');
+                    
+                    if (activeFilter === roleId) {
+                        // Filtreyi Kaldır
+                        ganttBars.forEach(bar => bar.classList.remove('gantt-bar-dimmed'));
+                        btn.classList.remove('filter-active');
+                        activeFilter = null;
                     } else {
-                        bar.classList.add('gantt-bar-dimmed'); // Solgunlaştır
+                        // Diğer butonları deaktif et
+                         document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('filter-active'));
+                         
+                        // Bu filtreyi aktif et
+                        btn.classList.add('filter-active');
+                        activeFilter = roleId;
+
+                        ganttBars.forEach(bar => {
+                            if (roleTasks.includes(bar.dataset.taskId)) {
+                                bar.classList.remove('gantt-bar-dimmed'); // Vurgula
+                            } else {
+                                bar.classList.add('gantt-bar-dimmed'); // Solgunlaştır
+                            }
+                        });
                     }
                 });
-            }
-        });
-    });
+            });
 
-    // Mobile Menu
-    const mobileMenuButton = document.getElementById('mobile-menu-button');
-    const mobileMenu = document.getElementById('mobile-menu');
-    mobileMenuButton.addEventListener('click', () => {
-        mobileMenu.classList.toggle('hidden');
-    });
+            // Mobile Menu
+            const mobileMenuButton = document.getElementById('mobile-menu-button');
+            const mobileMenu = document.getElementById('mobile-menu');
+            mobileMenuButton.addEventListener('click', () => {
+                mobileMenu.classList.toggle('hidden');
+            });
 
-    // Close mobile menu on link click
-    mobileMenu.addEventListener('click', (e) => {
-        if (e.target.tagName === 'A') {
-            mobileMenu.classList.add('hidden');
+            // Close mobile menu on link click
+            mobileMenu.addEventListener('click', (e) => {
+                if (e.target.tagName === 'A') {
+                    mobileMenu.classList.add('hidden');
+                }
+            });
         }
     });
-});
 </script>
 
 </body>
