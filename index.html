@@ -94,13 +94,42 @@
         .accordion-icon.rotate-45 {
             transform: rotate(45deg);
         }
+        /* YENİ MODAL STİLLERİ */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.6);
+            display: none; /* Varsayılan olarak gizli */
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+        .modal-content {
+            background-color: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            width: 90%;
+            max-width: 400px;
+            transform: scale(0.9);
+            transition: transform 0.3s ease;
+        }
+        .modal-overlay.active {
+            display: flex;
+        }
+        .modal-overlay.active .modal-content {
+            transform: scale(1);
+        }
     </style>
     <!-- Firebase SDK Imports ve Yapılandırma -->
     <script type="module">
-        // Sürüm 11.6.1 ile uyumluluğu sağlamak için import'lar güncellendi
+        // Yeni ihtiyacımız olan fonksiyonlar (addDoc, query, orderBy) import edildi.
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel, addDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Firestore ve Auth nesneleri için global erişim sağlamak için window'a atanır
         window.firebaseApp = null;
@@ -144,6 +173,7 @@
                                 window.userId = 'unauthenticated-error';
                             }
                         }
+                        // Kullanıcı ID'sinin sadece bir kısmını göster
                         document.getElementById('user-id-display').textContent = `Kullanıcı: ${window.userId.substring(0, 8)}...`;
                         resolve();
                     });
@@ -187,43 +217,155 @@
                  taskCard.classList.remove('completed-task');
              }
         }
+        
+        // Not Gönderme Modalını Başlatır
+        window.promptAndSubmitNote = (taskId) => {
+            const modal = document.getElementById('submit-modal');
+            const submitButton = document.getElementById('modal-submit-button');
+            const notesArea = document.getElementById(`notes-A${taskId}`);
+            const currentNote = notesArea ? notesArea.value.trim() : '';
 
-        // Firestore'dan gerçek zamanlı veri çekme
+            // Not alanı boşsa uyarı göster
+            if (!currentNote) {
+                modal.querySelector('h3').textContent = "Uyarı";
+                modal.querySelector('p').textContent = "Lütfen göndermek istediğiniz notu yazın.";
+                document.getElementById('submitter-name-input').style.display = 'none';
+                submitButton.style.display = 'none';
+                
+                modal.classList.add('active');
+                
+                // 2 saniye sonra modalı kapat ve normal moda dön
+                setTimeout(() => {
+                    modal.classList.remove('active');
+                    document.getElementById('submitter-name-input').style.display = 'block';
+                    submitButton.style.display = 'block';
+                    modal.querySelector('h3').textContent = "Gönderen Bilgisi";
+                    modal.querySelector('p').textContent = "Bu notu kimin gönderdiğini belirtmek için adınızı veya takma adınızı girin.";
+                }, 2000);
+                return;
+            }
+            
+            // Modal'ı temizle ve normal bilgileri göster
+            document.getElementById('submitter-name-input').value = '';
+            document.getElementById('submitter-name-input').style.display = 'block';
+            submitButton.style.display = 'block';
+            modal.querySelector('h3').textContent = "Gönderen Bilgisi";
+            modal.querySelector('p').textContent = "Bu notu kimin gönderdiğini belirtmek için adınızı veya takma adınızı girin.";
+
+            // Önceki listener'ı kaldır
+            submitButton.onclick = null; 
+
+            // Yeni listener'ı ata
+            submitButton.onclick = async () => {
+                const submitterName = document.getElementById('submitter-name-input').value.trim() || 'Anonim';
+                modal.classList.remove('active');
+                
+                await window.saveTaskStatus(taskId, 'notes_submission', {
+                    note: currentNote,
+                    submitter: submitterName,
+                    timestamp: new Date().toISOString()
+                });
+                
+                // Not başarıyla gönderildikten sonra metin alanını temizle
+                if (notesArea) {
+                    notesArea.value = '';
+                }
+            };
+
+            modal.classList.add('active');
+            document.getElementById('submitter-name-input').focus();
+        }
+
+        // Yeni: Not Geçmişini Dinler ve Render Eder
+        function setupNoteHistoryListener(taskId) {
+            if (!window.db) return;
+            
+            // Notes alt koleksiyonuna referans al
+            const notesCollectionPath = collection(window.db, `artifacts/${window.appId}/public/data/project_tracking`, taskId, 'notes');
+            // Timestamp'e göre en yeniyi en üste al
+            const q = query(notesCollectionPath, orderBy("timestamp", "desc"));
+
+            onSnapshot(q, (snapshot) => {
+                const historyContainer = document.getElementById(`note-history-container-${taskId}`);
+                const emptyState = document.getElementById(`note-history-empty-${taskId}`);
+                if (!historyContainer || !emptyState) return;
+                
+                let notesHtml = '';
+                let hasNotes = snapshot.docs.length > 0;
+                
+                snapshot.docs.forEach(noteDoc => {
+                    const data = noteDoc.data();
+                    
+                    let dateText = '';
+                    if (data.timestamp) {
+                        try {
+                            const date = new Date(data.timestamp);
+                            // Türkçe format: 19 Eki 2025 23:13
+                            dateText = date.toLocaleDateString('tr-TR', { 
+                                day: 'numeric', 
+                                month: 'short', 
+                                year: 'numeric', 
+                                hour: '2-digit', 
+                                minute: '2-digit' 
+                            });
+                        } catch (e) {
+                            dateText = 'Geçersiz Tarih';
+                        }
+                    }
+                    
+                    notesHtml += `
+                        <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 shadow-sm mb-3">
+                            <p class="text-sm text-slate-800 whitespace-pre-wrap">${data.note}</p>
+                            <p class="text-xs font-semibold text-sky-600 mt-1">
+                                Gönderen: ${data.submitter}
+                                <span class="text-slate-500 ml-2">(${dateText})</span>
+                            </p>
+                        </div>
+                    `;
+                });
+                
+                // Not geçmişini render et
+                historyContainer.innerHTML = notesHtml;
+                emptyState.style.display = hasNotes ? 'none' : 'block';
+                
+            }, (error) => {
+                console.error(`Görev ${taskId} için notları dinleme hatası:`, error);
+            });
+        }
+
+
+        // Firestore'dan gerçek zamanlı veri çekme ve dinleyici kurulumu
         async function setupFirestoreListeners() {
-            // Veri yolu: /artifacts/{appId}/public/data/project_tracking/{taskId}
             const collectionRef = collection(window.db, `artifacts/${window.appId}/public/data/project_tracking`);
             
-            // onSnapshot ile gerçek zamanlı dinleme
+            // 1. Ana belge dinleyicisi (Alt görev durumları için)
             onSnapshot(collectionRef, (snapshot) => {
                 snapshot.docChanges().forEach(change => {
                     const data = change.doc.data();
                     const taskId = change.doc.id;
-
-                    const notesArea = document.getElementById(`notes-A${taskId}`);
                     const subTaskStatus = data.subTaskStatus || {};
                     const currentTaskDetails = window.projectData.details.find(d => d.id === taskId);
                     
                     if (currentTaskDetails && currentTaskDetails.subTasks) {
-                        currentTaskDetails.subTasks.forEach(subTask => {
-                            const subCheckbox = document.getElementById(`sub-A${subTask.key}`);
-                            if (subCheckbox) {
-                                // Firestore'dan gelen veriyi UI'a uygula
-                                // Checkbox'ın durumunu sadece veri gelirse değiştir, yoksa false kalsın.
-                                subCheckbox.checked = subTaskStatus[subTask.key] === true;
-                            }
-                        });
-                    }
-
-                    if (notesArea) {
-                         notesArea.value = data.notes || '';
+                         currentTaskDetails.subTasks.forEach(subTask => {
+                             const subCheckbox = document.getElementById(`sub-A${subTask.key}`);
+                             if (subCheckbox) {
+                                 subCheckbox.checked = subTaskStatus[subTask.key] === true;
+                             }
+                         });
                     }
 
                     // Alt görev durumlarına göre ana kartı güncelle
                     window.updateTaskCardUI(taskId, subTaskStatus);
                 });
-                console.log("Firestore'dan Görev Durumu Güncellendi.");
+                console.log("Firestore'dan Alt Görev Durumları Güncellendi.");
             }, (error) => {
                 console.error("Firestore Dinleme Hatası:", error);
+            });
+            
+            // 2. Tüm görevler için Not Geçmişi Dinleyicilerini Kur
+            window.projectData.tasks.forEach(task => {
+                setupNoteHistoryListener(task.id);
             });
         }
         
@@ -234,22 +376,26 @@
                 return;
             }
             try {
-                // Ortak (public) yola kaydetme
-                const docRef = doc(window.db, `artifacts/${window.appId}/public/data/project_tracking`, taskId);
-                
-                let updateData = {};
-                if (field === 'notes') {
-                    // Not alanını kaydet
-                    updateData = { notes: value };
+                if (field === 'notes_submission') {
+                    // Not gönderme işlemi: Alt koleksiyona yeni belge ekle
+                    const notesCollectionRef = collection(window.db, `artifacts/${window.appId}/public/data/project_tracking`, taskId, 'notes');
+                    await addDoc(notesCollectionRef, { 
+                        note: value.note,
+                        submitter: value.submitter,
+                        timestamp: value.timestamp 
+                    });
+                    console.log(`Görev ${taskId} için yeni not eklendi: ${value.submitter}`);
+                    
                 } else if (field.startsWith('sub-')) {
                     // Alt görevi (subTaskStatus haritası içinde) kaydet
+                    const docRef = doc(window.db, `artifacts/${window.appId}/public/data/project_tracking`, taskId);
                     const subTaskKey = field.substring(4); 
-                    updateData = { subTaskStatus: { [subTaskKey]: value } };
+                    const updateData = { subTaskStatus: { [subTaskKey]: value } };
+                    
+                    // merge: true ile sadece belirtilen alanları günceller
+                    await setDoc(docRef, updateData, { merge: true });
+                    console.log(`Görev ${taskId} - Alt Görev durumu kaydedildi.`);
                 }
-                
-                // merge: true ile sadece belirtilen alanları günceller
-                await setDoc(docRef, updateData, { merge: true });
-                console.log(`Görev ${taskId} - ${field} kaydedildi.`);
                 
             } catch (e) {
                 console.error("Görev durumu kaydetme hatası:", e);
@@ -332,6 +478,26 @@
         <p>Yapay Zekâ Destekli İHA Projesi Kontrol Paneli | Abdullah Gül Üniversitesi</p>
     </footer>
 
+    <!-- Name Input Modal -->
+    <div id="submit-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 class="text-xl font-bold mb-4 text-slate-800">Gönderen Bilgisi</h3>
+            <p class="mb-4 text-slate-600">Bu notu kimin gönderdiğini belirtmek için adınızı veya takma adınızı girin.</p>
+            <input type="text" id="submitter-name-input" placeholder="Adınız/Takma Adınız" 
+                   class="w-full border border-slate-300 rounded-lg p-3 mb-4 focus:border-sky-500 focus:ring-sky-500 transition">
+            <div class="flex justify-end space-x-3">
+                <button onclick="document.getElementById('submit-modal').classList.remove('active')" 
+                        class="px-4 py-2 bg-slate-200 text-slate-700 font-medium rounded-lg hover:bg-slate-300 transition">
+                    İptal
+                </button>
+                <button id="modal-submit-button" 
+                        class="px-4 py-2 bg-green-500 text-white font-medium rounded-lg hover:bg-green-600 transition">
+                    Notu Gönder
+                </button>
+            </div>
+        </div>
+    </div>
+    
 <script>
     window.projectData = {
         tasks: [
@@ -603,11 +769,30 @@
                                     <input type="checkbox" id="completed-A${task.id}" data-task-id="${task.id}" class="h-6 w-6 text-green-600 border-gray-300 rounded focus:ring-green-500 cursor-pointer" disabled>
                                     <label for="completed-A${task.id}" class="text-lg font-medium text-green-700">İş Paketi Tamamlandı (Tüm Alt Görevler Bitince Otomatik)</label>
                                 </div>
-                                <label for="notes-A${task.id}" class="block text-sm font-medium text-slate-700 mb-1">Görev Notları (Maksimum 500 karakter):</label>
-                                <!-- Not alanı onchange ile Firestore'a kaydediliyor -->
-                                <textarea id="notes-A${task.id}" data-task-id="${task.id}" rows="4" maxlength="500"
-                                          class="w-full border border-slate-300 rounded-lg p-3 text-sm focus:border-sky-500 focus:ring-sky-500 transition"
-                                          onchange="window.saveTaskStatus('${task.id}', 'notes', this.value);"></textarea>
+                                
+                                <!-- GÖREV NOTU BÖLÜMÜ BAŞLANGIÇ -->
+                                <div class="mt-6 pt-4 border-t border-slate-100">
+                                    <label for="notes-A${task.id}" class="block text-sm font-medium text-slate-700 mb-1">Yeni Görev Notu (Gönderilmeden önce kayıt edilmez):</label>
+                                    <!-- Not Alanı - Butona basınca gönderim yapılır -->
+                                    <textarea id="notes-A${task.id}" data-task-id="${task.id}" rows="4" maxlength="500"
+                                              class="w-full border border-slate-300 rounded-lg p-3 text-sm focus:border-sky-500 focus:ring-sky-500 transition mb-3"
+                                              placeholder="Buraya görevle ilgili notunuzu yazın."></textarea>
+                                    
+                                    <button onclick="window.promptAndSubmitNote('${task.id}')"
+                                            class="w-full bg-sky-500 text-white font-bold py-2 rounded-lg hover:bg-sky-600 transition shadow-md">
+                                        Notu Gönder ve Kimlik Bilgisi Ekle
+                                    </button>
+
+                                    <div class="mt-6 pt-4 border-t border-slate-200">
+                                        <h5 class="font-bold text-lg text-slate-700 mb-3">Gönderilmiş Notlar Geçmişi</h5>
+                                        <!-- Notlar buraya setupNoteHistoryListener tarafından yüklenecek -->
+                                        <div id="note-history-container-${task.id}" class="space-y-3">
+                                            
+                                        </div>
+                                        <p id="note-history-empty-${task.id}" class="text-sm italic text-slate-500 mt-2">Henüz gönderilmiş bir not yok.</p>
+                                    </div>
+                                </div>
+                                <!-- GÖREV NOTU BÖLÜMÜ BİTİŞ -->
                             </div>
                         </div>
                     </div>
